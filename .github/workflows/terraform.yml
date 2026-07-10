@@ -60,9 +60,12 @@ jobs:
       - name: Post plan comment
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
+        env:
+          PLAN_OUTPUT: ${{ steps.plan.outputs.plan_output }}
         with:
           script: |
-            const body = `### F5 Terraform Plan\n\n${{ steps.plan.outputs.plan_output }}\n\n*Triggered by @${{ github.actor }}*`;
+            const plan = process.env.PLAN_OUTPUT || '';
+            const body = `### F5 Terraform Plan\n\n${plan}\n\n*Triggered by @${{ github.actor }}*`;
             github.rest.issues.createComment({
               owner: context.repo.owner, repo: context.repo.repo,
               issue_number: context.issue.number, body
