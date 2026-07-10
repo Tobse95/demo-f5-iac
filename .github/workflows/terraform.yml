@@ -1,0 +1,82 @@
+name: Terraform
+
+on:
+  pull_request:
+    paths: ["*/subnets/**"]
+  push:
+    branches: [main]
+    paths: ["*/subnets/**"]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  terraform:
+    name: Plan / Apply all devices
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+
+      - name: Detect affected device folders
+        id: devices
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE=${{ github.event.pull_request.base.sha }}
+            HEAD=${{ github.event.pull_request.head.sha }}
+            DIRS=$(git diff --name-only $BASE...$HEAD | grep '/subnets/' | cut -d/ -f1 | sort -u)
+          else
+            DIRS=$(git diff --name-only HEAD~1..HEAD | grep '/subnets/' | cut -d/ -f1 | sort -u)
+          fi
+          echo "dirs<<EOF" >> $GITHUB_OUTPUT
+          echo "$DIRS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "Affected devices: $DIRS"
+
+      - name: Terraform plan (PR)
+        id: plan
+        if: github.event_name == 'pull_request'
+        run: |
+          FULL_OUTPUT=""
+          while IFS= read -r dir; do
+            [ -z "$dir" ] && continue
+            echo "=== Planning: $dir ==="
+            cd "$dir"
+            terraform init -input=false -no-color
+            OUTPUT=$(terraform plan -no-color -input=false 2>&1)
+            FULL_OUTPUT="${FULL_OUTPUT}\n#### ${dir}\n\`\`\`\n${OUTPUT}\n\`\`\`"
+            cd ..
+          done <<< "${{ steps.devices.outputs.dirs }}"
+          echo "plan_output<<ENDOFPLAN" >> $GITHUB_OUTPUT
+          echo -e "$FULL_OUTPUT" >> $GITHUB_OUTPUT
+          echo "ENDOFPLAN" >> $GITHUB_OUTPUT
+
+      - name: Post plan comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `### F5 Terraform Plan\n\n${{ steps.plan.outputs.plan_output }}\n\n*Triggered by @${{ github.actor }}*`;
+            github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number, body
+            });
+
+      - name: Terraform apply (merge)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          while IFS= read -r dir; do
+            [ -z "$dir" ] && continue
+            echo "=== Applying: $dir ==="
+            cd "$dir"
+            terraform init -input=false -no-color
+            terraform apply -auto-approve -input=false -no-color
+            cd ..
+          done <<< "${{ steps.devices.outputs.dirs }}"
