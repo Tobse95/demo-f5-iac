@@ -3,13 +3,21 @@
 # In production, replace null_resource with:
 #   - resource "bigip_net_vlan"
 #   - resource "bigip_net_selfip" (device + floating)
-#   - resource "bigip_as3" (forwarding VS + optional LB VS)
+#   - resource "bigip_as3" (forwarding VS + LB VSes)
 
 locals {
   subnets = {
     for f in fileset("${path.module}/subnets", "*.yaml") :
     trimsuffix(f, ".yaml") => yamldecode(file("${path.module}/subnets/${f}"))
   }
+
+  # Flatten virtual_servers list across all subnets for individual LB VS resources.
+  lb_entries = merge([
+    for sname, s in local.subnets : {
+      for idx, vs in try(s.virtual_servers, []) :
+      "${sname}-vs${idx}" => merge(vs, { subnet_name = sname, vlan_id = s.vlan_id })
+    }
+  ]...)
 }
 
 resource "null_resource" "vlan" {
@@ -48,9 +56,9 @@ resource "null_resource" "selfip_floating" {
   depends_on = [null_resource.vlan]
 }
 
-# Represents bigip_as3 forwarding virtual server
+# Subnet forwarding (AS3 route advertisement) is always enabled for loadbalancer devices.
 resource "null_resource" "as3_forwarding" {
-  for_each = { for k, v in local.subnets : k => v if v.subnet_forwarding_enabled }
+  for_each = local.subnets
 
   triggers = {
     vs_name         = "vs_${replace(each.key, "-", "_")}_fwd"
@@ -62,15 +70,16 @@ resource "null_resource" "as3_forwarding" {
   depends_on = [null_resource.selfip_device]
 }
 
-# Represents bigip_as3 load balancing virtual server (optional)
+# One resource per virtual server entry (supports multiple VSes per subnet).
 resource "null_resource" "as3_lb" {
-  for_each = { for k, v in local.subnets : k => v if v.lb_enabled }
+  for_each = local.lb_entries
 
   triggers = {
-    vs_name    = "vs_${replace(each.key, "-", "_")}_lb"
-    vs_ip      = each.value.lb_virtual_server_ip
-    vs_port    = tostring(each.value.lb_virtual_server_port)
-    protocol   = each.value.lb_protocol
+    vs_name  = "vs_${replace(each.value.subnet_name, "-", "_")}_${replace(each.key, "-", "_")}"
+    vs_ip    = each.value.virtual_server_ip
+    vs_port  = tostring(each.value.virtual_server_port)
+    protocol = try(each.value.protocol, "tcp")
+    vlan     = "VLAN_${upper(each.value.subnet_name)}_${each.value.vlan_id}"
   }
 
   depends_on = [null_resource.selfip_device]
@@ -79,11 +88,11 @@ resource "null_resource" "as3_lb" {
 output "provisioned_subnets" {
   value = {
     for k, v in local.subnets : k => {
-      vlan_name       = "VLAN_${upper(k)}_${v.vlan_id}"
-      selfip          = "${v.device_selfip}/${v.prefix_length}"
-      is_primary      = v.is_primary
-      forwarding_vs   = v.subnet_forwarding_enabled ? "vs_${replace(k, "-", "_")}_fwd" : "disabled"
-      lb_vs           = v.lb_enabled ? "vs_${replace(k, "-", "_")}_lb" : "disabled"
+      vlan_name     = "VLAN_${upper(k)}_${v.vlan_id}"
+      selfip        = "${v.device_selfip}/${v.prefix_length}"
+      is_primary    = v.is_primary
+      forwarding_vs = "vs_${replace(k, "-", "_")}_fwd"
+      lb_vs_count   = length(try(v.virtual_servers, []))
     }
   }
 }

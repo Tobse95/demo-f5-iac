@@ -80,3 +80,25 @@ jobs:
             terraform apply -auto-approve -input=false -no-color
             cd ..
           done <<< "${{ steps.devices.outputs.dirs }}"
+
+      - name: Signal deployment to self-service
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.SELF_SERVICE_GITHUB_TOKEN }}
+        run: |
+          while IFS= read -r dir; do
+            [ -z "$dir" ] && continue
+            for yaml in "$dir/subnets/"*.yaml; do
+              [ -f "$yaml" ] || continue
+              name=$(grep '^subnet_name:' "$yaml" | awk '{print $2}' | tr -d '"')
+              env=$(grep '^environment:' "$yaml" | awk '{print $2}' | tr -d '"')
+              [ -z "$name" ] || [ -z "$env" ] && continue
+              gh api repos/Tobse95/network-self-service/dispatches \
+                --method POST \
+                -f event_type=subnet-active \
+                -f "client_payload[subnet_name]=$name" \
+                -f "client_payload[environment]=$env" \
+                -f "client_payload[platform]=f5" || true
+            done
+            break  # signal once; all devices share the same subnets
+          done <<< "${{ steps.devices.outputs.dirs }}"
