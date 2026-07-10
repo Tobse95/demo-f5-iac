@@ -29,9 +29,8 @@ jobs:
         id: devices
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE=${{ github.event.pull_request.base.sha }}
-            HEAD=${{ github.event.pull_request.head.sha }}
-            DIRS=$(git diff --name-only $BASE...$HEAD | grep '/subnets/' | cut -d/ -f1 | sort -u)
+            # GitHub PR checkout creates a merge commit; HEAD^1 is the base branch tip
+            DIRS=$(git diff --name-only HEAD^1..HEAD | grep '/subnets/' | cut -d/ -f1 | sort -u)
           else
             DIRS=$(git diff --name-only HEAD~1..HEAD | grep '/subnets/' | cut -d/ -f1 | sort -u)
           fi
